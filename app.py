@@ -42,6 +42,9 @@ if 'active_timers' not in st.session_state:
 if 'timer_start_times' not in st.session_state:
     st.session_state.timer_start_times = {}
 
+if 'editing_todo_id' not in st.session_state:
+    st.session_state.editing_todo_id = None
+
 # App title
 st.title("📝 Enhanced Todo App")
 st.markdown("Powerful task management with categories, tags, subtasks, and file attachments")
@@ -255,208 +258,294 @@ try:
                 due_date_display = f" - {ui.render_due_date(todo['due_date'], todo.get('completed', False))}"
 
             with st.expander(f"{title}{due_date_display} | {summary}" if summary else f"{title}{due_date_display}"):
-                # Top section: Basic info
-                col1, col2, col3 = st.columns([0.6, 0.3, 0.1])
+                # Check if this todo is being edited
+                is_editing = st.session_state.editing_todo_id == todo['id']
 
-                with col1:
-                    # Checkbox for completion
-                    completed = st.checkbox(
-                        "Mark as complete",
-                        value=todo.get('completed', False),
-                        key=f"complete_{todo['id']}"
-                    )
+                if is_editing:
+                    # Edit form
+                    st.markdown("### ✏️ Edit Todo")
+                    with st.form(f"edit_todo_{todo['id']}"):
+                        edit_col1, edit_col2 = st.columns(2)
 
-                    if completed != todo.get('completed', False):
-                        try:
-                            db.update_todo(supabase, todo['id'], completed=completed)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error updating: {str(e)}")
+                        with edit_col1:
+                            edit_task = st.text_input("Task *", value=todo['task'])
+                            edit_description = st.text_area("Description", value=todo.get('description', ''))
+                            edit_priority = st.selectbox("Priority", options=PRIORITY_OPTIONS, index=PRIORITY_OPTIONS.index(todo.get('priority', 'medium')))
 
-                with col2:
-                    st.markdown(f"**{summary}**")
-
-                with col3:
-                    if st.button("🗑️", key=f"del_{todo['id']}"):
-                        try:
-                            # Delete attachments from storage first
-                            attachments = db.get_attachments(supabase, todo['id'])
-                            for att in attachments:
-                                storage.delete_file(supabase, att['file_path'])
-
-                            # Delete todo (cascades to subtasks, attachments table)
-                            db.delete_todo(supabase, todo['id'])
-                            st.success("Todo deleted!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error deleting: {str(e)}")
-
-                st.divider()
-
-                # Description
-                if todo.get('description'):
-                    st.markdown("**Description:**")
-                    st.write(todo['description'])
-                    st.divider()
-
-                # Tags
-                if todo.get('todo_tags'):
-                    tags = [t['tags'] for t in todo['todo_tags'] if t.get('tags')]
-                    if tags:
-                        st.markdown(ui.render_tag_chips(tags))
-                        st.divider()
-
-                # Time Tracking
-                st.markdown("**⏱️ Time Tracking:**")
-                time_col1, time_col2, time_col3 = st.columns([0.4, 0.3, 0.3])
-
-                with time_col1:
-                    st.write(ui.render_time_tracking(todo.get('time_spent_minutes', 0)))
-
-                with time_col2:
-                    if st.button("➕ Add 15 min", key=f"time_add_{todo['id']}"):
-                        try:
-                            db.update_time_spent(supabase, todo['id'], TIME_INCREMENT_MINUTES)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {str(e)}")
-
-                with time_col3:
-                    custom_time = st.number_input(
-                        "Minutes",
-                        min_value=0,
-                        step=5,
-                        key=f"custom_time_{todo['id']}",
-                        label_visibility="collapsed"
-                    )
-                    if st.button("Add", key=f"time_custom_{todo['id']}"):
-                        if custom_time > 0:
-                            try:
-                                db.update_time_spent(supabase, todo['id'], custom_time)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error: {str(e)}")
-
-                st.divider()
-
-                # Subtasks
-                st.markdown("**✓ Subtasks:**")
-
-                subtasks = db.get_subtasks(supabase, todo['id'])
-                subtask_stats = db.get_subtask_completion(supabase, todo['id'])
-
-                if subtasks:
-                    st.write(ui.render_subtask_progress(subtask_stats))
-
-                    for subtask in subtasks:
-                        sub_col1, sub_col2 = st.columns([0.9, 0.1])
-                        with sub_col1:
-                            sub_completed = st.checkbox(
-                                subtask['title'],
-                                value=subtask['completed'],
-                                key=f"subtask_{subtask['id']}"
+                        with edit_col2:
+                            # Get current category
+                            current_category = todo.get('category_id')
+                            edit_category = st.selectbox(
+                                "Category",
+                                options=[None] + [c['id'] for c in categories],
+                                index=0 if not current_category else ([None] + [c['id'] for c in categories]).index(current_category),
+                                format_func=lambda x: "No Category" if x is None else next((c['name'] for c in categories if c['id'] == x), '')
                             )
 
-                            if sub_completed != subtask['completed']:
+                            # Parse current due date
+                            current_due = None
+                            if todo.get('due_date'):
                                 try:
-                                    db.update_subtask(supabase, subtask['id'], completed=sub_completed)
+                                    from datetime import datetime
+                                    current_due = datetime.fromisoformat(todo['due_date'].replace('Z', '+00:00')).date()
+                                except:
+                                    pass
+
+                            edit_due_date = st.date_input("Due Date", value=current_due)
+
+                            # Get current tags
+                            current_tags = [t['tag_id'] for t in todo.get('todo_tags', [])]
+                            edit_tags = st.multiselect(
+                                "Tags",
+                                options=[t['id'] for t in all_tags],
+                                default=current_tags,
+                                format_func=lambda x: next((t['name'] for t in all_tags if t['id'] == x), '')
+                            )
+
+                        form_col1, form_col2 = st.columns(2)
+                        with form_col1:
+                            save_button = st.form_submit_button("💾 Save Changes", use_container_width=True)
+                        with form_col2:
+                            cancel_button = st.form_submit_button("❌ Cancel", use_container_width=True)
+
+                        if save_button:
+                            if not edit_task:
+                                st.error("Task cannot be empty!")
+                            else:
+                                try:
+                                    # Update todo
+                                    db.update_todo(
+                                        supabase,
+                                        todo['id'],
+                                        task=edit_task,
+                                        description=edit_description if edit_description else None,
+                                        priority=edit_priority,
+                                        due_date=edit_due_date.isoformat() if edit_due_date else None,
+                                        category_id=edit_category
+                                    )
+
+                                    # Update tags
+                                    db.assign_tags_to_todo(supabase, todo['id'], edit_tags)
+
+                                    st.session_state.editing_todo_id = None
+                                    st.success("Todo updated!")
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"Error: {str(e)}")
+                                    st.error(f"Error updating todo: {str(e)}")
 
-                        with sub_col2:
-                            if st.button("🗑️", key=f"del_sub_{subtask['id']}"):
-                                try:
-                                    db.delete_subtask(supabase, subtask['id'])
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error: {str(e)}")
+                        if cancel_button:
+                            st.session_state.editing_todo_id = None
+                            st.rerun()
 
-                # Add new subtask
-                with st.form(f"add_subtask_{todo['id']}"):
-                    new_subtask = st.text_input("Add subtask", placeholder="New subtask...", label_visibility="collapsed")
-                    if st.form_submit_button("Add Subtask"):
-                        if new_subtask:
+                else:
+                    # Normal view
+                    # Top section: Basic info
+                    col1, col2, col3, col4 = st.columns([0.5, 0.3, 0.1, 0.1])
+
+                    with col1:
+                        # Checkbox for completion
+                        completed = st.checkbox(
+                            "Mark as complete",
+                            value=todo.get('completed', False),
+                            key=f"complete_{todo['id']}"
+                        )
+
+                        if completed != todo.get('completed', False):
                             try:
-                                db.create_subtask(supabase, todo['id'], new_subtask)
-                                st.success("Subtask added!")
+                                db.update_todo(supabase, todo['id'], completed=completed)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error updating: {str(e)}")
+
+                    with col2:
+                        st.markdown(f"**{summary}**")
+
+                    with col3:
+                        if st.button("✏️", key=f"edit_{todo['id']}", help="Edit todo"):
+                            st.session_state.editing_todo_id = todo['id']
+                            st.rerun()
+
+                    with col4:
+                        if st.button("🗑️", key=f"del_{todo['id']}", help="Delete todo"):
+                            try:
+                                # Delete attachments from storage first
+                                attachments = db.get_attachments(supabase, todo['id'])
+                                for att in attachments:
+                                    storage.delete_file(supabase, att['file_path'])
+
+                                # Delete todo (cascades to subtasks, attachments table)
+                                db.delete_todo(supabase, todo['id'])
+                                st.success("Todo deleted!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error deleting: {str(e)}")
+
+                    st.divider()
+
+                    # Description
+                    if todo.get('description'):
+                        st.markdown("**Description:**")
+                        st.write(todo['description'])
+                        st.divider()
+
+                    # Tags
+                    if todo.get('todo_tags'):
+                        tags = [t['tags'] for t in todo['todo_tags'] if t.get('tags')]
+                        if tags:
+                            st.markdown(ui.render_tag_chips(tags))
+                            st.divider()
+
+                    # Time Tracking
+                    st.markdown("**⏱️ Time Tracking:**")
+                    time_col1, time_col2, time_col3 = st.columns([0.4, 0.3, 0.3])
+
+                    with time_col1:
+                        st.write(ui.render_time_tracking(todo.get('time_spent_minutes', 0)))
+
+                    with time_col2:
+                        if st.button("➕ Add 15 min", key=f"time_add_{todo['id']}"):
+                            try:
+                                db.update_time_spent(supabase, todo['id'], TIME_INCREMENT_MINUTES)
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Error: {str(e)}")
 
-                st.divider()
-
-                # File Attachments
-                st.markdown("**📎 Attachments:**")
-
-                attachments = db.get_attachments(supabase, todo['id'])
-
-                if attachments:
-                    for att in attachments:
-                        att_col1, att_col2, att_col3 = st.columns([0.6, 0.2, 0.2])
-
-                        with att_col1:
-                            st.write(ui.render_attachment_item(att))
-
-                        with att_col2:
-                            # Generate signed URL for download
-                            success, url, error = storage.get_signed_url(supabase, att['file_path'])
-                            if success:
-                                st.markdown(f"[⬇️ Download]({url})")
-                            else:
-                                st.error("Can't generate download link")
-
-                        with att_col3:
-                            if st.button("🗑️", key=f"del_att_{att['id']}"):
+                    with time_col3:
+                        custom_time = st.number_input(
+                            "Minutes",
+                            min_value=0,
+                            step=5,
+                            key=f"custom_time_{todo['id']}",
+                            label_visibility="collapsed"
+                        )
+                        if st.button("Add", key=f"time_custom_{todo['id']}"):
+                            if custom_time > 0:
                                 try:
-                                    storage.delete_file(supabase, att['file_path'])
-                                    db.delete_attachment(supabase, att['id'])
-                                    st.success("Attachment deleted!")
+                                    db.update_time_spent(supabase, todo['id'], custom_time)
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {str(e)}")
 
-                # Upload new attachment
-                uploaded_file = st.file_uploader(
-                    "Upload file",
-                    key=f"upload_{todo['id']}",
-                    label_visibility="collapsed"
-                )
+                    st.divider()
 
-                if uploaded_file:
-                    # Validate file
-                    is_valid, error_msg = storage.validate_file_upload(uploaded_file, uploaded_file.name)
+                    # Subtasks
+                    st.markdown("**✓ Subtasks:**")
 
-                    if not is_valid:
-                        st.error(error_msg)
-                    else:
-                        if st.button("📤 Upload File", key=f"upload_btn_{todo['id']}"):
-                            with st.spinner("Uploading..."):
-                                try:
-                                    success, file_path, error = storage.upload_file(
-                                        supabase,
-                                        todo['id'],
-                                        uploaded_file,
-                                        uploaded_file.name
-                                    )
+                    subtasks = db.get_subtasks(supabase, todo['id'])
+                    subtask_stats = db.get_subtask_completion(supabase, todo['id'])
 
-                                    if success:
-                                        # Save to database
-                                        db.create_attachment(
-                                            supabase,
-                                            todo['id'],
-                                            uploaded_file.name,
-                                            file_path,
-                                            uploaded_file.size,
-                                            uploaded_file.type
-                                        )
-                                        st.success("File uploaded!")
+                    if subtasks:
+                        st.write(ui.render_subtask_progress(subtask_stats))
+
+                        for subtask in subtasks:
+                            sub_col1, sub_col2 = st.columns([0.9, 0.1])
+                            with sub_col1:
+                                sub_completed = st.checkbox(
+                                    subtask['title'],
+                                    value=subtask['completed'],
+                                    key=f"subtask_{subtask['id']}"
+                                )
+
+                                if sub_completed != subtask['completed']:
+                                    try:
+                                        db.update_subtask(supabase, subtask['id'], completed=sub_completed)
                                         st.rerun()
-                                    else:
-                                        st.error(f"Upload failed: {error}")
+                                    except Exception as e:
+                                        st.error(f"Error: {str(e)}")
 
+                            with sub_col2:
+                                if st.button("🗑️", key=f"del_sub_{subtask['id']}"):
+                                    try:
+                                        db.delete_subtask(supabase, subtask['id'])
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error: {str(e)}")
+
+                    # Add new subtask
+                    with st.form(f"add_subtask_{todo['id']}"):
+                        new_subtask = st.text_input("Add subtask", placeholder="New subtask...", label_visibility="collapsed")
+                        if st.form_submit_button("Add Subtask"):
+                            if new_subtask:
+                                try:
+                                    db.create_subtask(supabase, todo['id'], new_subtask)
+                                    st.success("Subtask added!")
+                                    st.rerun()
                                 except Exception as e:
                                     st.error(f"Error: {str(e)}")
+
+                    st.divider()
+
+                    # File Attachments
+                    st.markdown("**📎 Attachments:**")
+
+                    attachments = db.get_attachments(supabase, todo['id'])
+
+                    if attachments:
+                        for att in attachments:
+                            att_col1, att_col2, att_col3 = st.columns([0.6, 0.2, 0.2])
+
+                            with att_col1:
+                                st.write(ui.render_attachment_item(att))
+
+                            with att_col2:
+                                # Generate signed URL for download
+                                success, url, error = storage.get_signed_url(supabase, att['file_path'])
+                                if success:
+                                    st.markdown(f"[⬇️ Download]({url})")
+                                else:
+                                    st.error("Can't generate download link")
+
+                            with att_col3:
+                                if st.button("🗑️", key=f"del_att_{att['id']}"):
+                                    try:
+                                        storage.delete_file(supabase, att['file_path'])
+                                        db.delete_attachment(supabase, att['id'])
+                                        st.success("Attachment deleted!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error: {str(e)}")
+
+                    # Upload new attachment
+                    uploaded_file = st.file_uploader(
+                        "Upload file",
+                        key=f"upload_{todo['id']}",
+                        label_visibility="collapsed"
+                    )
+
+                    if uploaded_file:
+                        # Validate file
+                        is_valid, error_msg = storage.validate_file_upload(uploaded_file, uploaded_file.name)
+
+                        if not is_valid:
+                            st.error(error_msg)
+                        else:
+                            if st.button("📤 Upload File", key=f"upload_btn_{todo['id']}"):
+                                with st.spinner("Uploading..."):
+                                    try:
+                                        success, file_path, error = storage.upload_file(
+                                            supabase,
+                                            todo['id'],
+                                            uploaded_file,
+                                            uploaded_file.name
+                                        )
+
+                                        if success:
+                                            # Save to database
+                                            db.create_attachment(
+                                                supabase,
+                                                todo['id'],
+                                                uploaded_file.name,
+                                                file_path,
+                                                uploaded_file.size,
+                                                uploaded_file.type
+                                            )
+                                            st.success("File uploaded!")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Upload failed: {error}")
+
+                                    except Exception as e:
+                                        st.error(f"Error: {str(e)}")
 
 except Exception as e:
     st.error(f"Error fetching todos: {str(e)}")
