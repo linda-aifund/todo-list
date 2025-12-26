@@ -249,7 +249,12 @@ try:
             title = ui.format_todo_title(todo['task'], todo.get('completed', False))
             summary = ui.render_todo_summary(todo)
 
-            with st.expander(f"{title}"):
+            # Add due date to title if exists
+            due_date_display = ""
+            if todo.get('due_date'):
+                due_date_display = f" - {ui.render_due_date(todo['due_date'], todo.get('completed', False))}"
+
+            with st.expander(f"{title}{due_date_display} | {summary}" if summary else f"{title}{due_date_display}"):
                 # Top section: Basic info
                 col1, col2, col3 = st.columns([0.6, 0.3, 0.1])
 
